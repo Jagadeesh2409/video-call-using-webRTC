@@ -1,17 +1,279 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>live video call</title>
-</head>
-<body>
-    <h1>HELLO</h1>
+<html>
+  <head>
+    <title>Video Call</title>
+    <style>
+      video {
+        width: 45%;
+        margin: 10px;
+        background: black;
+      }
 
-    
-<script src="/socket.io/socket.io.js"></script>
-<script>
-    const socket = io();
-</script>
-</body>
+      .emoji-bubble {
+        position: absolute;
+        font-size: 40px;
+        animation: floatUp 2s ease-out forwards;
+      }
+      @keyframes floatUp {
+        0% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-150px);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h2>WebRTC 1-to-1 Video Call</h2>
+
+    <video id="localVideo" autoplay playsinline muted></video>
+    <div style="position: relative; display: inline-block">
+      <video id="remoteVideo" autoplay playsinline></video>
+      <div
+        id="emojiContainer"
+        style="
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          pointer-events: none;
+        "
+      ></div>
+    </div>
+    <div>
+      <button id="startBtn" onclick="startCamera()">Start</button>
+      <button id="callBtn" onclick="callUser()">Call</button>
+      <button id="answerBtn" onclick="answerCall()">Answer</button>
+
+      <button id="toggleCamBtn" onclick="toggleCamera()">Camera Off</button>
+      <button id="toggleMicBtn" onclick="toggleMic()">Mute</button>
+      <button id="screenBtn" onclick="shareScreen()">Share Screen</button>
+
+      <button onclick="sendEmoji('❤️')">❤️</button>
+      <button onclick="sendEmoji('😂')">😂</button>
+      <button onclick="sendEmoji('🔥')">🔥</button>
+      
+    </div>
+    <div style="margin-top: 20px; width: 300px">
+      <h3>Chat</h3>
+
+      <div
+        id="chatBox"
+        style="
+          width: 100%;
+          height: 150px;
+          border: 1px solid #ccc;
+          padding: 5px;
+          overflow-y: auto;
+          background: #f8f8f8;
+          margin-bottom: 10px;
+        "
+      ></div>
+
+      <input
+        id="chatInput"
+        type="text"
+        placeholder="Type message..."
+        style="width: 70%; padding: 5px"
+      />
+
+      <button onclick="sendMessage()">Send</button>
+    </div>
+
+    <div
+      id="callStatus"
+      style="
+        font-size: 20px;
+        font-weight: bold;
+        margin: 10px;
+        color: red;
+        display: none;
+      "
+    ></div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+
+      let localStream;
+      let pc;
+      let screenStream;
+      let dataChannel;
+
+      const localVideo = document.getElementById("localVideo");
+      const remoteVideo = document.getElementById("remoteVideo");
+      const emojiContainer = document.getElementById("emojiContainer");
+
+      const startCamera = async () => {
+        console.log("Requesting camera...");
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+        localVideo.srcObject = localStream;
+        createPeerConnection();
+      };
+
+      const createPeerConnection = () => {
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        });
+
+        localStream
+          .getTracks()
+          .forEach((track) => pc.addTrack(track, localStream));
+
+        pc.ontrack = (event) => {
+          remoteVideo.srcObject = event.streams[0];
+        };
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) socket.emit("ice-candidate", event.candidate);
+        };
+
+        dataChannel = pc.createDataChannel("chat");
+        setupDataChannel(dataChannel);
+
+        pc.ondatachannel = (event) => {
+          dataChannel = event.channel;
+          setupDataChannel(dataChannel);
+        };
+      };
+
+      const setupDataChannel = (dc) => {
+        dc.onopen = () => console.log("DataChannel Opened");
+        dc.onmessage = (event) => {
+          console.log("Received:", event.data);
+          if (["❤️", "😂", "🔥"].includes(event.data)) {
+            showEmojiBubble(event.data);
+          } else {
+            addChatMessage("Friend", event.data);
+          }
+        };
+      };
+
+      const callUser = async () => {
+        showStatus("Calling...");
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit("offer", offer);
+      };
+
+      const answerCall = async () => {
+        hideStatus();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit("answer", answer);
+      };
+
+      socket.on("offer", async (offer) => {
+        showStatus("Incoming Call...");
+
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      });
+
+      socket.on("answer", async (answer) => {
+        hideStatus();
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      });
+
+      socket.on("ice-candidate", async (candidate) => {
+        try {
+          await pc.addIceCandidate(candidate);
+        } catch (e) {
+          console.error("Error adding ICE candidate:", e);
+        }
+      });
+
+      function toggleCamera() {
+        const videoTrack = localStream.getVideoTracks()[0];
+        videoTrack.enabled = !videoTrack.enabled;
+
+        document.getElementById("toggleCamBtn").innerText = videoTrack.enabled
+          ? "Camera Off"
+          : "Camera On";
+      }
+
+      function toggleMic() {
+        const audioTrack = localStream.getAudioTracks()[0];
+        audioTrack.enabled = !audioTrack.enabled;
+
+        document.getElementById("toggleMicBtn").innerText = audioTrack.enabled
+          ? "Mute"
+          : "Unmute";
+      }
+
+      async function shareScreen() {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+        });
+
+        const screenTrack = screenStream.getVideoTracks()[0];
+        const sender = pc.getSenders().find((s) => s.track.kind === "video");
+        sender.replaceTrack(screenTrack);
+
+        screenTrack.onended = () => {
+          const camTrack = localStream.getVideoTracks()[0];
+          sender.replaceTrack(camTrack);
+        };
+      }
+
+      function sendEmoji(emoji) {
+        if (dataChannel && dataChannel.readyState === "open") {
+          dataChannel.send(emoji);
+          showEmojiBubble(emoji);
+        }
+      }
+
+      function showEmojiBubble(emoji) {
+        const bubble = document.createElement("div");
+        bubble.className = "emoji-bubble";
+        bubble.innerText = emoji;
+
+        bubble.style.left = Math.random() * 80 + "%";
+        bubble.style.top = "60%";
+
+        emojiContainer.appendChild(bubble);
+
+        setTimeout(() => bubble.remove(), 2000);
+      }
+
+      function sendMessage() {
+        const msg = document.getElementById("chatInput").value;
+
+        if (!msg.trim()) return;
+
+        if (dataChannel && dataChannel.readyState === "open") {
+          dataChannel.send(msg);
+          addChatMessage("You", msg);
+        }
+
+        document.getElementById("chatInput").value = "";
+      }
+
+      function addChatMessage(sender, msg) {
+        const div = document.createElement("div");
+        div.innerHTML = `<strong>${sender}:</strong> ${msg}`;
+        document.getElementById("chatBox").appendChild(div);
+
+        document.getElementById("chatBox").scrollTop =
+          document.getElementById("chatBox").scrollHeight;
+      }
+
+      function showStatus(text) {
+        const el = document.getElementById("callStatus");
+        el.innerText = text;
+        el.style.display = "block";
+      }
+
+      function hideStatus() {
+        document.getElementById("callStatus").style.display = "none";
+      }
+    </script>
+  </body>
 </html>
